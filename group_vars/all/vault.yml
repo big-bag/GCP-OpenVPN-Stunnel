@@ -1,0 +1,3 @@
+---
+vault_email_no_reply_pwd: "Password_No_Reply"
+vault_email_bcc_address: "bcc-user@domain.com"

@@ -1,0 +1,14 @@
+#!/bin/bash
+cd /root/blacklist/list
+curl -O -L https://antifilter.download/list/ipsum.lst
+curl -O -L https://antifilter.download/list/subnet.lst
+old=$(cat /root/blacklist/md5.txt);
+new=$(cat /root/blacklist/list/*.lst | md5sum | head -c 32);
+if [ "$old" != "$new" ]
+then
+cat /root/blacklist/list/ipsum.lst | sed 's_.*_route & reject;_' > /etc/bird/ipsum.txt
+cat /root/blacklist/list/subnet.lst | sed 's_.*_route & reject;_' > /etc/bird/subnet.txt
+/usr/sbin/birdc configure;
+logger "RKN list reconfigured";
+echo $new > /root/blacklist/md5.txt;
+fi

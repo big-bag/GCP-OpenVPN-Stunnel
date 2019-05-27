@@ -1,0 +1,12 @@
+---
+- hosts: openvpn-srv
+  become: yes
+  gather_facts: yes
+  roles:
+  - iptables_default
+  - stunnel_server
+  - stunnel_client
+  - openvpn_server
+  - openvpn_client
+  - blacklist_bgp
+  - mtproxy

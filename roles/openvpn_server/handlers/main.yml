@@ -1,0 +1,6 @@
+---
+- name: OPENVPN | SERVICE RESTART
+  service:
+    name: openvpn-server@openvpn_server_{{ item.name }}
+    state: restarted
+  with_items: "{{ ovpn_server_instance }}"

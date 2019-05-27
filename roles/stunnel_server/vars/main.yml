@@ -1,0 +1,8 @@
+---
+packages_install:
+# REQUIREMENTS TO BUILD OPENSSL
+- libtool
+- perl-core
+- zlib-devel
+# ANSIBLE REQUIREMENTS
+- python2-pip # TO INSTALL LATEST VERSION OF pyOpenSSL THAT USING IN openssl_certificate ANSIBLE MODULE

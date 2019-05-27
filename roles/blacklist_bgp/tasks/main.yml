@@ -1,0 +1,85 @@
+---
+- name: VPN BLACKLIST | PACKAGES INSTALL
+  yum:
+    name: "{{ packages_install }}"
+    state: installed
+  tags:
+  - blacklist
+
+- name: VPN BLACKLIST | BIRD DISABLE SERVICE
+  service:
+    name: bird
+    state: stopped
+  tags:
+  - blacklist
+
+- name: VPN BLACKLIST | SET FACTS FOR IP-ADDRESSES
+  set_fact:
+    ip_address_ovpn_srv: "{{ item[0] }}"
+    ip_address_msk_router: "{{ item[1] }}"
+    ip_address_spb_router: "{{ item[2] }}"
+  with_nested:
+  - "{{ ovpn_server_instance.0.device.0.ip_server }}"
+  - "{{ ovpn_server_instance.0.device.0.ip_client }}"
+  - "{{ ovpn_server_instance.0.device.1.ip_client }}"
+  tags:
+  - blacklist
+
+- name: VPN BLACKLIST | BIRD CREATE CONFIG
+  template:
+    src: bird.conf.j2
+    dest: /etc/bird.conf
+    owner: root
+    group: root
+    mode: 0644
+    backup: yes
+  tags:
+  - blacklist
+
+- name: VPN BLACKLIST | BIRD CREATE DIRECTORIES
+  file:
+    path: "{{ item }}"
+    state: directory
+    mode: 0755
+  with_items:
+  - /etc/bird
+  - /root/blacklist/list
+  tags:
+  - blacklist
+
+- name: VPN BLACKLIST | BLACKLIST CREATE SCRIPT
+  template:
+    src: chklist.j2
+    dest: /root/blacklist/chklist
+    owner: root
+    group: root
+    mode: 0755
+  tags:
+  - blacklist
+
+- name: VPN BLACKLIST | BLACKLIST RUN SCRIPT
+  command: /root/blacklist/chklist
+  args:
+    chdir: /etc/bird
+    creates: ipsum.txt
+  tags:
+  - blacklist
+
+- name: VPN BLACKLIST | ADD CRON JOB TO RUN BLACKLIST SCRIPT EVERY 30 MINUTES
+  cron:
+    name: "Update blacklist files"
+    minute: "*/30"
+    job: "bash /root/blacklist/chklist"
+    state: present
+  tags:
+  - blacklist
+
+# COMMAND 'birdc show route' WILL SHOW ROUTES
+# AFTER SERVICE STARTED
+- name: VPN BLACKLIST | BIRD SERVICE START AND ENABLE
+  service:
+    name: bird
+    state: started
+    enabled: yes
+  tags:
+  - blacklist

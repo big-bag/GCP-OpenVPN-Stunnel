@@ -1,0 +1,12 @@
+[Unit]
+Description=MTProxy
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/usr/local/src/MTProxy/objs/bin
+ExecStart=/usr/local/src/MTProxy/objs/bin/mtproto-proxy -u nobody -p 8888 -H {{ proxy_port }} -S {{ connect_secret_saved }} --aes-pwd proxy-secret proxy-multi.conf -M 1
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target

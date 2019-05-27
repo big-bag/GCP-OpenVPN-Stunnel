@@ -1,0 +1,5 @@
+---
+- name: MTPROXY | SERVICE RESTART
+  service:
+    name: MTProxy
+    state: restarted

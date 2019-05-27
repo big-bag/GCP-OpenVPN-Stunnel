@@ -1,0 +1,319 @@
+---
+- name: OVPN CLIENT | EASY-RSA CHECK IF CLIENT .crt FILE EXISTS
+  stat:
+    path: /usr/local/src/easy-rsa-{{ item.0.name }}/easyrsa3/pki/issued/openvpn_client_{{ item.1.name }}.crt
+  with_subelements:
+  - "{{ ovpn_server_instance }}"
+  - device
+  register: openvpn_client_crt_file
+  tags:
+  - smtp
+  - rdp
+
+- name: OVPN CLIENT | EASY-RSA build-client-full
+  command: ./easyrsa build-client-full openvpn_client_{{ item.item[1].name }} nopass
+  args:
+    chdir: /usr/local/src/easy-rsa-{{ item.item[0].name }}/easyrsa3
+  environment:
+    EASYRSA_VARS_FILE: '/usr/local/src/easy-rsa-{{ item.item[0].name }}/easyrsa3/vars'
+  with_items: "{{ openvpn_client_crt_file.results }}"
+  when: not item.stat.exists
+  tags:
+  - smtp
+  - rdp
+
+- name: OVPN CLIENT | DIR CREATE
+  file:
+    path: /etc/openvpn/client/{{ item.0.name }}_{{ item.1.name }}
+    state: directory
+    mode: 0755
+  with_subelements:
+  - "{{ ovpn_server_instance }}"
+  - device
+  tags:
+  - smtp
+  - rdp
+
+- name: OVPN CLIENT | ca.crt COPY
+  copy:
+    src: /usr/local/src/easy-rsa-{{ item.item[0].name }}/easyrsa3/pki/ca.crt
+    dest: /etc/openvpn/client/{{ item.item[0].name }}_{{ item.item[1].name }}/{{ item.item[1].name }}_srv_ca.crt
+    remote_src: yes
+  with_items: "{{ openvpn_client_crt_file.results }}"
+  tags:
+  - smtp
+  - rdp
+
+- name: OVPN CLIENT | .key COPY
+  copy:
+    src: /usr/local/src/easy-rsa-{{ item.item[0].name }}/easyrsa3/pki/private/openvpn_client_{{ item.item[1].name }}.key
+    dest: /etc/openvpn/client/{{ item.item[0].name }}_{{ item.item[1].name }}/{{ item.item[1].name }}_clt_priv.key
+    remote_src: yes
+  with_items: "{{ openvpn_client_crt_file.results }}"
+  tags:
+  - smtp
+  - rdp
+
+- name: OVPN CLIENT | .crt COPY
+  copy:
+    src: /usr/local/src/easy-rsa-{{ item.item[0].name }}/easyrsa3/pki/issued/openvpn_client_{{ item.item[1].name }}.crt
+    dest: /etc/openvpn/client/{{ item.item[0].name }}_{{ item.item[1].name }}/{{ item.item[1].name }}_clt_cert.crt
+    remote_src: yes
+  with_items: "{{ openvpn_client_crt_file.results }}"
+  tags:
+  - smtp
+  - rdp
+
+- name: OVPN CLIENT | HMAC KEY COPY
+  copy:
+    src: /etc/openvpn/server/openvpn_server_{{ item.item[0].name }}/ta.key
+    dest: /etc/openvpn/client/{{ item.item[0].name }}_{{ item.item[1].name }}/{{ item.item[1].name }}_srv_ta.key
+    remote_src: yes
+  with_items: "{{ openvpn_client_crt_file.results }}"
+  tags:
+  - smtp
+  - rdp
+
+# USERS IN VARS FILE MUST BE UNIQUE
+# OTHERWISE NEW USER WILL OVERRIDE PREVIOUS USER WITH THE SAME NAME
+- name: OVPN CLIENT | USER CREATE
+  user:
+    name: "{{ item.1.name }}"
+    system: yes
+    shell: /bin/false
+    create_home: no
+    password: "{{ item.1.password | password_hash('sha512') }}"
+    update_password: on_create
+    state: present
+  with_subelements:
+  - "{{ ovpn_server_instance }}"
+  - device
+  failed_when: "'{{ item.1.password }}' != '' and '{{ item.1.password }}' == None"
+  ignore_errors: yes
+  tags:
+  - smtp
+  - rdp
+
+# WHEN NEXT TASK RUN IT REWRITES EXISTING TEMPLATE ON REMOTE MACHINE
+# TO ENABLE INDEPODENCE OF PLAYBOOK, THIS TASK WILL PREVENT EXEUTION OF NEXT TASK
+- name: OVPN CLIENT | CHECK IF CLIENT .ovpn CONFIG EXISTS
+  stat:
+    path: /etc/openvpn/client/{{ item.0.name }}_{{ item.1.name }}/{{ item.1.name }}_clt_lin.ovpn
+  with_subelements:
+  - "{{ ovpn_server_instance }}"
+  - device
+  register: openvpn_client_ovpn_file
+  tags:
+  - smtp
+  - rdp
+
+# ovpn - OPENVPN
+# lin - LINUX
+- name: OVPN CLIENT | .ovpn CONFIG CREATE
+  template:
+    src: openvpn_client_{{ item.item[0].name }}.ovpn.j2
+    dest: /etc/openvpn/client/{{ item.item[0].name }}_{{ item.item[1].name }}/{{ item.item[1].name }}_clt_lin.ovpn
+    owner: root
+    group: root
+    mode: 0644
+  with_items: "{{ openvpn_client_ovpn_file.results }}"
+  when: not item.stat.exists
+  tags:
+  - smtp
+  - rdp
+
+- name: OVPN CLIENT | READ ca.crt FILE CONTENT
+  slurp:
+    src: /etc/openvpn/client/{{ item.0.name }}_{{ item.1.name }}/{{ item.1.name }}_srv_ca.crt
+  with_subelements:
+  - "{{ ovpn_server_instance }}"
+  - device
+  register: ca_crt_file_b64
+  tags:
+  - smtp
+  - rdp
+
+- name: OVPN CLIENT | ADD ca.crt CONTENT TO .ovpn CONFIG
+  replace:
+    path: /etc/openvpn/client/{{ item.item[0].name }}_{{ item.item[1].name }}/{{ item.item[1].name }}_clt_lin.ovpn
+    regexp: '^(ca\sca\.crt)$'
+    replace: |
+      ;ca ca.crt
+      <ca>
+      {{ item['content'] | b64decode }}</ca>
+  with_items: "{{ ca_crt_file_b64.results }}"
+  tags:
+  - smtp
+  - rdp
+
+- name: OVPN CLIENT | READ client.crt FILE CONTENT | EXTRACT SPECIFIC LINES
+  command: "sed -n -e '/-----BEGIN/,/-----END/ p' /etc/openvpn/client/{{ item.0.name }}_{{ item.1.name }}/{{ item.1.name }}_clt_cert.crt"
+  with_subelements:
+  - "{{ ovpn_server_instance }}"
+  - device
+  register: client_crt_file_sed
+  changed_when: false
+  tags:
+  - smtp
+  - rdp
+
+- name: OVPN CLIENT | ADD client.crt CONTENT TO .ovpn CONFIG
+  replace:
+    path: /etc/openvpn/client/{{ item.item[0].name }}_{{ item.item[1].name }}/{{ item.item[1].name }}_clt_lin.ovpn
+    regexp: '^(cert\sclient\.crt)$'
+    replace: |
+      ;cert client.crt
+      <cert>
+      {{ item.stdout }}
+      </cert>
+  with_items: "{{ client_crt_file_sed.results }}"
+  tags:
+  - smtp
+  - rdp
+
+- name: OVPN CLIENT | READ client.key FILE CONTENT
+  slurp:
+    src: /etc/openvpn/client/{{ item.0.name }}_{{ item.1.name }}/{{ item.1.name }}_clt_priv.key
+  with_subelements:
+  - "{{ ovpn_server_instance }}"
+  - device
+  register: client_key_file_b64
+  tags:
+  - smtp
+  - rdp
+
+- name: OVPN CLIENT | ADD client.key CONTENT TO .ovpn CONFIG
+  replace:
+    path: /etc/openvpn/client/{{ item.item[0].name }}_{{ item.item[1].name }}/{{ item.item[1].name }}_clt_lin.ovpn
+    regexp: '^(key\sclient\.key)$'
+    replace: |
+      ;key client.key
+      <key>
+      {{ item['content'] | b64decode }}</key>
+  with_items: "{{ client_key_file_b64.results }}"
+  tags:
+  - smtp
+  - rdp
+
+- name: OVPN CLIENT | READ ta.key FILE CONTENT
+  slurp:
+    src: /etc/openvpn/client/{{ item.0.name }}_{{ item.1.name }}/{{ item.1.name }}_srv_ta.key
+  with_subelements:
+  - "{{ ovpn_server_instance }}"
+  - device
+  register: ta_key_file_b64
+  tags:
+  - smtp
+  - rdp
+
+- name: OVPN CLIENT | ADD ta.key CONTENT TO .ovpn CONFIG
+  replace:
+    path: /etc/openvpn/client/{{ item.item[0].name }}_{{ item.item[1].name }}/{{ item.item[1].name }}_clt_lin.ovpn
+    regexp: '^(tls-auth\sta\.key\s1)$'
+    replace: |
+      ;tls-auth ta.key 1
+      <tls-auth>
+      {{ item['content'] | b64decode }}</tls-auth>
+  with_items: "{{ ta_key_file_b64.results }}"
+  tags:
+  - smtp
+  - rdp
+
+- name: OVPN CLIENT | CHECK IF windows.ovpn CONFIG EXISTS
+  stat:
+    path: /etc/openvpn/client/{{ item.0.name }}_{{ item.1.name }}/{{ item.1.name }}_clt_win.ovpn
+  with_subelements:
+  - "{{ ovpn_server_instance }}"
+  - device
+  register: openvpn_client_win_ovpn
+  tags:
+  - smtp
+  - rdp
+
+- name: OVPN CLIENT | COPY linux.ovpn CONFIG TO windows.ovpn CONFIG
+  copy:
+    src: /etc/openvpn/client/{{ item.item[0].name }}_{{ item.item[1].name }}/{{ item.item[1].name }}_clt_lin.ovpn
+    dest: /etc/openvpn/client/{{ item.item[0].name }}_{{ item.item[1].name }}/{{ item.item[1].name }}_clt_win.ovpn
+    remote_src: yes
+  with_items: "{{ openvpn_client_win_ovpn.results }}"
+  when: not item.stat.exists
+  tags:
+  - smtp
+  - rdp
+
+- name: OVPN CLIENT | COMMENT user IN windows.ovpn CONFIG
+  replace:
+    path: "/etc/openvpn/client/{{ item.0.name }}_{{ item.1.name }}/{{ item.1.name }}_clt_win.ovpn"
+    regexp: '^(user\snobody)$'
+    replace: ';\1'
+  with_subelements:
+  - "{{ ovpn_server_instance }}"
+  - device
+  tags:
+  - smtp
+  - rdp
+
+- name: OVPN CLIENT | COMMENT group IN windows.ovpn CONFIG
+  replace:
+    path: "/etc/openvpn/client/{{ item.0.name }}_{{ item.1.name }}/{{ item.1.name }}_clt_win.ovpn"
+    regexp: '^(group\snobody)$'
+    replace: ';\1'
+  with_subelements:
+  - "{{ ovpn_server_instance }}"
+  - device
+  tags:
+  - smtp
+  - rdp
+
+# PERMISSIONS TO FILE MUST BE o+r TO ALLOW READ IT BY USER nobody
+# FILE IN ccd DIR MUST BE AS NAME OF CERT FROM TASK "OPENVPN | EASY-RSA build-client-full"
+- name: OVPN CLIENT | ROUTER ccd POPULATE
+  copy:
+    dest: /etc/openvpn/server/ccd/openvpn_client_{{ item.name }}
+    owner: nobody
+    group: nobody
+    mode: 0644
+    content: |
+      # define the fixed IP address
+      ifconfig-push {{ item.ip_client }} {{ item.ip_server }}
+  with_items: "{{ ovpn_server_instance.0.device }}"
+  tags:
+  - router
+
+- name: OVPN CLIENT | CLIENT ccd POPULATE
+  copy:
+    dest: /etc/openvpn/server/ccd/openvpn_client_{{ item.name }}
+    owner: nobody
+    group: nobody
+    mode: 0644
+    content: |
+      # define the fixed IP address
+      ifconfig-push {{ item.ip_client }} {{ item.ip_server }}
+
+      # redirect all traffic via the VPN
+      push "redirect-gateway def1"
+
+      # exclude certain IP ranges (not sets of domain names!) / Ignoring redirect-gateway
+      # push "route <vps-ip-address> 255.255.255.255 net_gateway"
+
+      # DNS server addresses
+      push "dhcp-option DNS 51.255.48.78"
+      push "dhcp-option DNS 87.98.175.85"
+      push "dhcp-option DNS 151.80.147.153"
+      push "dhcp-option DNS 5.135.183.146"
+  with_items: "{{ ovpn_server_instance.1.device }}"
+  tags:
+  - client
+
+- name: OVPN CLIENT | STUNNEL ccd POPULATE
+  copy:
+    dest: /etc/openvpn/server/ccd/openvpn_client_{{ item.name }}
+    owner: nobody
+    group: nobody
+    mode: 0644
+    content: |
+      # define the fixed IP address
+      ifconfig-push {{ item.ip_client }} {{ item.ip_server }}
+  with_items: "{{ ovpn_server_instance.2.device }}"
+  tags:
+  - rdp

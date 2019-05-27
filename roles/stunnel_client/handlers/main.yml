@@ -1,0 +1,5 @@
+---
+- name: STUNNEL | SERVICE RESTART
+  service:
+    name: stunnel
+    state: restarted
