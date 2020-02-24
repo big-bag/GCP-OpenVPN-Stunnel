@@ -1,0 +1,270 @@
+---
+## ------------------- server config ------------------- #
+- name: build and install stunnel on centos
+  block:
+    - name: install packages
+      yum:
+        name: "{{ packages }}"
+      vars:
+        packages:
+          # ----- requirements to build OpenSSL ----- #
+          - libtool
+          - perl-core
+          - zlib-devel
+          # ----------------------------------------- #
+          - python3-pip # for 'pyOpenSSL' in 'openssl_certificate' module
+    
+    - name: download openssl sources
+      unarchive:
+        src: https://www.openssl.org/source/openssl-{{ openssl-version }}.tar.gz
+        dest: /usr/local/src
+        remote_src: yes
+    
+    - name: declare the appropriate destination for the binary
+      command: ./config --prefix=/usr/local/openssl --openssldir=/usr/local/openssl shared zlib
+      args:
+        chdir: /usr/local/src/openssl-{{ openssl-version }}/
+        creates: /usr/local/src/openssl-{{ openssl-version }}/Makefile
+    
+    - name: build
+      make:
+        chdir: /usr/local/src/openssl-{{ openssl-version }}/
+        creates: /usr/local/src/openssl-{{ openssl-version }}/libcrypto.so.1.1
+    
+    - name: compile the source code into a working program and install it
+      make:
+        chdir: /usr/local/src/openssl-{{ openssl-version }}/
+        target: install
+        creates: /usr/local/openssl/bin/openssl
+    
+    - name: add new version to PATH
+      copy:
+        dest: /etc/profile.d/openssl.sh
+        content: |
+          pathmunge /usr/local/openssl/bin
+    
+    - name: link libraries
+      copy:
+        dest: /etc/ld.so.conf.d/openssl-{{ openssl-version }}.conf
+        content: |
+          /usr/local/openssl/lib
+    
+    - name: rebuild libraries cache
+      command: /usr/sbin/ldconfig
+      changed_when: false
+    
+    - name: download sources
+      unarchive:
+        src: https://www.stunnel.org/downloads/stunnel-{{ stunnel-version }}.tar.gz
+        dest: /usr/local/src
+        remote_src: yes
+    
+    - name: configure
+      command: ./configure
+      args:
+        chdir: /usr/local/src/stunnel-{{ stunnel-version }}/
+        creates: /usr/local/src/stunnel-{{ stunnel-version }}/Makefile
+    
+    - name: build
+      make:
+        chdir: /usr/local/src/stunnel-{{ stunnel-version }}/
+        creates: /usr/local/src/stunnel-{{ stunnel-version }}/src/stunnel
+    
+    - name: compile the source code into a working program and install it
+      make:
+        chdir: /usr/local/src/stunnel-{{ stunnel-version }}/
+        target: install
+        creates: /usr/local/bin/stunnel
+    
+    - name: create systemd unit
+      copy:
+        dest: /usr/lib/systemd/system/stunnel.service
+        content: |
+          [Unit]
+          Description=TLS tunnel for network daemons
+          After=syslog.target network.target
+    
+          [Service]
+          ExecStart=/usr/local/bin/stunnel
+          Type=forking
+          PrivateTmp=true
+    
+          [Install]
+          WantedBy=multi-user.target
+    
+    - name: force systemd to reread configs
+      systemd:
+        daemon_reload: yes
+    
+    - name: create stunnel service account
+      user:
+        name: stunnel
+        home: /var/stunnel
+        create_home: yes
+        shell: /bin/false
+  when: ansible_distribution == "CentOS" and ansible_distribution_major_version == '7'
+
+- name: install stunnel on alpine
+  apk:
+    name: stunnel
+    state: latest
+    update_cache: yes
+    repository: http://dl-cdn.alpinelinux.org/alpine/v3.10/community
+  when: ansible_distribution == "Alpine" and ansible_distribution_major_version == '3'
+
+- name: define path to stunnel directory based on OS family
+  set_fact:
+    stunnel_dir: '{% if ansible_os_family == "RedHat" %}/usr/local/etc{% elif ansible_os_family == "Alpine" %}/etc{% endif %}/stunnel'
+
+- name: create server config
+  template:
+    src: stunnel.conf.j2
+    dest: '{{ stunnel_dir }}/stunnel.conf'
+    backup: yes
+  notify: restart stunnel
+
+- name: upgrade pip
+  pip:
+    name: pip
+    extra_args: --upgrade
+    executable: pip3
+
+- name: install requirements to compile packages installing by pip
+  apk:
+    name: "{{ packages }}"
+    update_cache: yes
+  vars:
+    packages:
+      - gcc
+      - python3-dev
+      - musl-dev
+      - libffi-dev
+      - openssl-dev
+
+- name: install requirements for openssl_* modules
+  pip:
+    name: pyopenssl
+    executable: pip3
+
+- name: create server directory
+  file:
+    path: '{{ stunnel_dir }}/server'
+    state: directory
+
+- name: generate private key
+  openssl_privatekey:
+    path: '{{ stunnel_dir }}/server/server.key'
+    type: RSA
+    size: '2048'
+
+- name: generate certificate signing request
+  openssl_csr:
+    path: '{{ stunnel_dir }}/server/server.csr'
+    privatekey_path: '{{ stunnel_dir }}/server/server.key'
+    common_name: '{{ stunnel_address }}'
+
+- name: generate selfsigned certificate
+  openssl_certificate:
+    path: '{{ stunnel_dir }}/server/server.crt'
+    privatekey_path: '{{ stunnel_dir }}/server/server.key'
+    csr_path: '{{ stunnel_dir }}/server/server.csr'
+    provider: selfsigned
+
+- name: create client directory
+  file:
+    path: '{{ stunnel_dir }}/client/{{ item.name }}'
+    state: directory
+  with_items: "{{ openvpn_groups.2.devices }}"
+
+- name: generate private key
+  openssl_privatekey:
+    path: '{{ stunnel_dir }}/client/{{ item.name }}/{{ item.name }}_key.pem'
+    type: RSA
+    size: '2048'
+  with_items: "{{ openvpn_groups.2.devices }}"
+
+- name: generate certificate signing request
+  openssl_csr:
+    path: '{{ stunnel_dir }}/client/{{ item.name }}/{{ item.name }}_req.csr'
+    privatekey_path: '{{ stunnel_dir }}/client/{{ item.name }}/{{ item.name }}_key.pem'
+    common_name: "{{ item.name }}"
+  with_items: "{{ openvpn_groups.2.devices }}"
+
+- name: generate selfsigned certificate
+  openssl_certificate:
+    path: '{{ stunnel_dir }}/client/{{ item.name }}/{{ item.name }}_crt.pem'
+    privatekey_path: '{{ stunnel_dir }}/client/{{ item.name }}/{{ item.name }}_key.pem'
+    csr_path: '{{ stunnel_dir }}/client/{{ item.name }}/{{ item.name }}_req.csr'
+    provider: selfsigned
+  with_items: "{{ openvpn_groups.2.devices }}"
+
+- name: generate PKCS#12 archive
+  openssl_pkcs12:
+    path: '{{ stunnel_dir }}/client/{{ item.name }}/{{ item.name }}_crt.p12'
+    friendly_name: "{{ item.name }}"
+    privatekey_path: '{{ stunnel_dir }}/client/{{ item.name }}/{{ item.name }}_key.pem'
+    certificate_path: '{{ stunnel_dir }}/client/{{ item.name }}/{{ item.name }}_crt.pem'
+    mode: '0600'
+  with_items: "{{ openvpn_groups.2.devices }}"
+
+- name: create temporary directory
+  tempfile:
+    state: directory
+  register: tempdir
+  changed_when: false
+
+- name: copy certificates to temporary directory
+  copy:
+    src: '{{ stunnel_dir }}/client/{{ item.name }}/{{ item.name }}_crt.pem'
+    dest: '{{ tempdir.path }}/{{ item.name }}_crt.pem'
+    remote_src: yes
+  with_items: "{{ openvpn_groups.2.devices }}"
+  changed_when: false
+
+# without 'clients.crt' stunnel will not start
+- name: merge clients sertificates to certificate authority
+  assemble:
+    src: '{{ tempdir.path }}'
+    dest: '{{ stunnel_dir }}/server/ca'
+    remote_src: yes
+  notify: restart stunnel
+
+- name: delete temporary directory
+  file:
+    path: "{{ tempdir.path }}"
+    state: absent
+  when: tempdir.path is defined
+  changed_when: false
+
+- name: start the stunnel daemon and enable it to start at boot
+  service:
+    name: stunnel
+    state: started
+    enabled: yes
+
+- name: upload client configs
+  template:
+    src: client_{{ item[1] }}.conf.j2
+    dest: '{{ stunnel_dir }}/client/{{ item[0].name }}/{{ item[0].name }}_{{ item[1] }}.conf'
+  with_nested:
+    - "{{ openvpn_groups.2.devices }}"
+    - [ 'lin', 'win' ]
+
+- name: create local directory for certificates and configs (optional)
+  file:
+    path: /tmp/stunnel
+    state: directory
+  delegate_to: '127.0.0.1'
+  become: no
+
+- name: install dependency for 'synchronize' (optional)
+  apk:
+    name: rsync
+    update_cache: yes
+  when: ansible_distribution == "Alpine" and ansible_distribution_major_version == '3'
+
+- name: download certificates and configs to local directory (optional)
+  synchronize:
+    mode: pull
+    src: '{{ stunnel_dir }}/client/'
+    dest: /tmp/stunnel/

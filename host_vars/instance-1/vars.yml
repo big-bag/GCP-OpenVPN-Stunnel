@@ -1,0 +1,51 @@
+---
+openvpn_address: "{{ vault_openvpn_address }}"
+openvpn_port:    "1194"
+stunnel_address: "{{ vault_stunnel_address }}"
+stunnel_port:    "8443"
+mtproxy_address: "{{ vault_mtproxy_address }}"
+mtproxy_port:    "9443"
+mtproxy_secret:  "{{ vault_mtproxy_secret }}"
+
+disable_all_rules:                "no"
+delete_rules_first:               "no"
+allow_openvpn_udp_clients:        "yes"
+allow_docker_access_to_internet:  "yes"
+allow_forward_mail:               "yes"
+allow_forward_http:               "yes"
+allow_forward_rdp:                "yes"
+
+openvpn_groups:
+  # ------------------- routers group ------------------- #
+  - name: router
+    easyrsa_algo: rsa
+    curve: secp521r1
+    tun_interface: tun0
+    network: 192.168.50.0
+    devices:
+      - name: router_01
+        password: "{{ vault_password_router_01 }}"
+        ip_client: 192.168.50.2
+        ip_server: 192.168.50.1
+  # ------------------- openvpn udp clients group ------------------- #
+  - name: client
+    easyrsa_algo: ec
+    curve: secp521r1
+    tun_interface: tun1
+    network: 192.168.60.0
+    devices:
+      - name: client_01
+        password: "{{ vault_password_client_01 }}"
+        ip_client: 192.168.60.2
+        ip_server: 192.168.60.1
+  # ------------------- stunnel clients group ------------------- #
+  - name: stunnel
+    easyrsa_algo: ec
+    curve: secp384r1 # 'secp384r1' allows connections from alpine, because it doesn't support 'curve = secp521r1'
+    tun_interface: tun2
+    network: 192.168.70.0
+    devices:
+      - name: stunnel_01
+        password: "{{ vault_password_stunnel_01 }}"
+        ip_client: 192.168.70.2
+        ip_server: 192.168.70.1

@@ -1,7 +1,0 @@
----
-packages_install:
-- openssl-devel
-- zlib-devel
-
-proxy_address: mtproxy.domain.com
-proxy_port: 9443

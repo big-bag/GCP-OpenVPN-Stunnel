@@ -1,0 +1,46 @@
+; **************************************************************************
+; * Global options                                                         *
+; **************************************************************************
+
+; It is recommended to drop root privileges if stunnel is started by root
+setuid = nobody
+setgid = nobody
+
+; PID file is created inside the chroot jail (if enabled)
+chroot = /usr/local/var/lib/stunnel/
+pid = /stunnel.pid
+
+; Debugging stuff (may be useful for troubleshooting)
+;foreground = yes
+;debug = info
+;log = append
+;output = /stunnel.log
+debug = 0
+
+; **************************************************************************
+; * Service defaults may also be specified in individual service sections  *
+; **************************************************************************
+
+sslVersion = all
+options = NO_SSLv2
+options = NO_SSLv3
+
+; **************************************************************************
+; * Service definitions                                                    *
+; **************************************************************************
+
+; ***************************************** TLS client mode services
+
+[openvpn]
+client = yes
+accept = 127.0.0.1:1194
+connect = {{ stunnel_address }}:{{ stunnel_port }}
+verifyPeer = yes
+CAfile = /usr/local/etc/stunnel/stunnel_server.crt
+cert = /usr/local/etc/stunnel/stunnel_client_{{ item[0].name }}_crt.pem
+key = /usr/local/etc/stunnel/stunnel_client_{{ item[0].name }}_key.pem
+### 'verifyPeer' - Check the server
+### 'CAfile' - To check the server it needs its certificate
+### 'cert', 'key' - A certificate and a key are needed to verify the client (verifyPeer) on the server
+
+; vim:ft=dosini

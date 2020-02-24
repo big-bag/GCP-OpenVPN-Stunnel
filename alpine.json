@@ -1,0 +1,114 @@
+{
+  "variables": {
+    "disk_size": "512"
+  },
+  "sensitive-variables": ["root_pass"],
+  "builders": [
+    {
+      "type": "qemu",
+      "use_default_display": "true",
+      "vnc_bind_address": "0.0.0.0",
+      "vnc_use_password": "false",
+      "vnc_port_min": "5901",
+      "vnc_port_max": "5901",
+      "iso_url": "http://dl-cdn.alpinelinux.org/alpine/v3.10/releases/x86_64/alpine-virt-3.10.3-x86_64.iso",
+      "iso_checksum_url": "http://dl-cdn.alpinelinux.org/alpine/v3.10/releases/x86_64/alpine-virt-3.10.3-x86_64.iso.sha256",
+      "iso_checksum_type": "file",
+      "output_directory": "output-qemu",
+      "shutdown_command": "/sbin/poweroff",
+      "disk_size": "{{ user `disk_size` }}",
+      "format": "raw",
+      "accelerator": "kvm",
+      "http_directory": "http",
+      "communicator": "ssh",
+      "ssh_username": "root",
+      "ssh_password": "{{ user `root_pass` }}",
+      "vm_name": "disk.raw",
+      "net_device": "virtio-net",
+      "disk_interface": "virtio",
+      "boot_wait": "10s",
+      "boot_command": [
+        "root<enter><wait>",
+        "echo 'iface eth0 inet dhcp' >> /etc/network/interfaces<enter>",
+        "ifup eth0<enter><wait5>",
+        "wget http://{{ .HTTPIP }}:{{ .HTTPPort }}/answerfile<enter><wait5>",
+        "export ROOTFS=xfs<enter>",
+        "export BOOTLOADER=grub<enter>",
+        "setup-alpine -f $PWD/answerfile<enter><wait5>",
+        "{{ user `root_pass` }}<enter><wait>",
+        "{{ user `root_pass` }}<enter><wait10>",
+        "y<enter><wait30s>",
+        "reboot<enter><wait20s>",
+        "{{user `root_pass`}}<enter><wait15>",
+        "<leftCtrlOn>c<leftCtrlOff><wait10>",
+        "root<enter><wait>",
+        "{{ user `root_pass` }}<enter><wait>",
+        "echo 'PermitRootLogin yes' >> /etc/ssh/sshd_config<enter>",
+        "/etc/init.d/sshd restart<enter><wait>"
+      ]
+    }
+  ],
+  "provisioners": [
+    {
+      "type": "shell",
+      "inline_shebang": "/bin/sh -e",
+      "inline": [
+        "sed -i '/GRUB_CMDLINE_LINUX_DEFAULT/s/^/#/g' /etc/default/grub",
+        "echo GRUB_TERMINAL='\"serial console\"' >> /etc/default/grub",
+        "echo GRUB_SERIAL_COMMAND='\"serial --unit=0 --word=8 --parity=no --speed 38400 --stop=1\"' >> /etc/default/grub",
+        "echo GRUB_CMDLINE_LINUX_DEFAULT='\"console=ttyS0,38400n8d modules=sd-mod,usb-storage,xfs quiet rootfstype=xfs\"' >> /etc/default/grub",
+        "grub-mkconfig -o /boot/grub/grub.cfg",
+        "sed -i '/ttyS0::respawn:\\/sbin\\/getty -L 0 ttyS0 vt100/s/^/#/g' /etc/inittab",
+        "echo ttyS0::respawn:/sbin/getty -L ttyS0 38400 vt100 >> /etc/inittab",
+        "apk add sudo",
+        "echo '%wheel ALL=(ALL) NOPASSWD: ALL' >> /etc/sudoers.d/wheel",
+        "adduser --disabled-password {{ user `os_username` }}",
+        "echo '{{ user `os_username` }}:*' | chpasswd -e",
+        "adduser {{ user `os_username` }} wheel",
+        "mkdir /home/{{ user `os_username` }}/.ssh",
+        "chown {{ user `os_username` }}:{{ user `os_username` }} /home/{{ user `os_username` }}/.ssh",
+        "chmod 0700 /home/{{ user `os_username` }}/.ssh"
+      ]
+    },
+    {
+      "type": "file",
+      "source": "{{ user `os_user_key` }}",
+      "destination": "/home/{{ user `os_username` }}/.ssh/authorized_keys",
+      "direction": "upload"
+    },
+    {
+      "type": "shell",
+      "inline_shebang": "/bin/sh -e",
+      "inline": [
+        "chown {{ user `os_username` }}:{{ user `os_username` }} /home/{{ user `os_username` }}/.ssh/authorized_keys",
+        "chmod 0600 /home/{{ user `os_username` }}/.ssh/authorized_keys",
+        "sed -i '/PubkeyAuthentication/s/^#//g' /etc/ssh/sshd_config",
+        "apk add python3",
+        "rm -f /etc/ssh/ssh_host_*",
+        "sed -i '/PermitRootLogin yes/d' /etc/ssh/sshd_config",
+        "dd if=/dev/zero of=/fill bs=1M count=\"$(df -m /  | tail -n1 | awk '{print $3}')\" ; rm /fill"
+      ]
+    }
+  ],
+  "post-processors": [
+    [
+      {
+        "type": "compress",
+        "output": "output-qemu/disk.raw.tar.gz"
+      },
+      {
+        "type": "googlecompute-import",
+        "project_id": "{{ user `gcp_project` }}",
+        "account_file": "{{ user `gcp_sa_file` }}",
+        "bucket": "{{ user `gcp_project` }}-bucket",
+        "image_name": "alpine-3-10-3-v{{isotime \"20060102\"}}-{{timestamp}}",
+        "image_description": "Alpine Linux 3.10.3 x86_64 Virtual built on {{isotime \"2006-01-02\"}}",
+        "image_family": "alpine"
+      },
+      {
+        "type": "shell-local",
+        "inline": ["sed -i 's/\"gcp_image\": \"alpine.*\",/\"gcp_image\": \"alpine-3-10-3-v{{isotime \"20060102\"}}-{{timestamp}}\",/g' terraform.tfvars.json"]
+      }
+    ]
+  ]
+}

@@ -1,0 +1,422 @@
+---
+# ------------------- server config ------------------- #
+- name: install packages
+  yum:
+    name: "{{ packages }}"
+  vars:
+    packages:
+      - openvpn
+      - git
+  when: ansible_distribution == "CentOS" and ansible_distribution_major_version == '7'
+
+- name: install packages
+  apk:
+    name: "{{ packages }}"
+    update_cache: yes
+  vars:
+    packages:
+      - openvpn
+      - openvpn-auth-pam
+      - git
+  when: ansible_distribution == "Alpine" and ansible_distribution_major_version == '3'
+
+- name: create a directory for sources
+  file:
+    path: /usr/local/src
+    state: directory
+  when: ansible_distribution == "Alpine" and ansible_distribution_major_version == '3'
+
+- name: download easy-rsa sources
+  git:
+    repo: https://github.com/OpenVPN/easy-rsa.git
+    dest: /usr/local/src/easy-rsa-{{ item.name }}
+  with_items: "{{ openvpn_groups }}"
+
+- name: create easy-rsa vars
+  copy:
+    src: /usr/local/src/easy-rsa-{{ item.name }}/easyrsa3/vars.example
+    dest: /usr/local/src/easy-rsa-{{ item.name }}/easyrsa3/vars
+    remote_src: yes
+    force: no
+  with_items: "{{ openvpn_groups }}"
+
+- name: set EASYRSA_DN
+  replace:
+    path: /usr/local/src/easy-rsa-{{ item.name }}/easyrsa3/vars
+    regexp: '^#(set_var\sEASYRSA_DN\s+"cn_only")'
+    replace: '\1'
+  with_items: "{{ openvpn_groups }}"
+
+- name: set EASYRSA_ALGO
+  replace:
+    path: /usr/local/src/easy-rsa-{{ item.name }}/easyrsa3/vars
+    regexp: '^#set_var\sEASYRSA_ALGO\s+rsa$'
+    replace: 'set_var EASYRSA_ALGO            {{ item.easyrsa_algo }}'
+  with_items: "{{ openvpn_groups }}"
+
+- name: set EASYRSA_CURVE
+  replace:
+    path: /usr/local/src/easy-rsa-{{ item.name }}/easyrsa3/vars
+    regexp: '^#set_var\sEASYRSA_CURVE\s+secp384r1$'
+    replace: 'set_var EASYRSA_CURVE           {{ item.curve }}'
+  with_items: "{{ openvpn_groups }}"
+
+- name: set EASYRSA_CA_EXPIRE
+  replace:
+    path: /usr/local/src/easy-rsa-{{ item.name }}/easyrsa3/vars
+    regexp: '^#(set_var\sEASYRSA_CA_EXPIRE\s+3650)$'
+    replace: '\1'
+  with_items: "{{ openvpn_groups }}"
+
+- name: set EASYRSA_CERT_EXPIRE
+  replace:
+    path: /usr/local/src/easy-rsa-{{ item.name }}/easyrsa3/vars
+    regexp: '^#set_var\sEASYRSA_CERT_EXPIRE\s+825$'
+    replace: 'set_var EASYRSA_CERT_EXPIRE     3650'
+  with_items: "{{ openvpn_groups }}"
+
+- name: set EASYRSA_CRL_DAYS
+  replace:
+    path: /usr/local/src/easy-rsa-{{ item.name }}/easyrsa3/vars
+    regexp: '^#set_var\sEASYRSA_CRL_DAYS\s+180$'
+    replace: 'set_var EASYRSA_CRL_DAYS        3650'
+  with_items: "{{ openvpn_groups }}"
+
+- name: init pki
+  command: ./easyrsa init-pki
+  args:
+    chdir: /usr/local/src/easy-rsa-{{ item.name }}/easyrsa3
+    creates: /usr/local/src/easy-rsa-{{ item.name }}/easyrsa3/pki/
+  environment:
+    EASYRSA_VARS_FILE: '/usr/local/src/easy-rsa-{{ item.name }}/easyrsa3/vars'
+  with_items: "{{ openvpn_groups }}"
+
+- name: build ca
+  command: ./easyrsa --batch build-ca nopass
+  args:
+    chdir: /usr/local/src/easy-rsa-{{ item.name }}/easyrsa3
+    creates: /usr/local/src/easy-rsa-{{ item.name }}/easyrsa3/pki/ca.crt
+  environment:
+    EASYRSA_VARS_FILE: '/usr/local/src/easy-rsa-{{ item.name }}/easyrsa3/vars'
+  with_items: "{{ openvpn_groups }}"
+
+- name: build server full
+  command: ./easyrsa build-server-full {{ item.name }} nopass
+  args:
+    chdir: /usr/local/src/easy-rsa-{{ item.name }}/easyrsa3
+    creates: /usr/local/src/easy-rsa-{{ item.name }}/easyrsa3/pki/issued/{{ item.name }}.crt
+  environment:
+    EASYRSA_VARS_FILE: '/usr/local/src/easy-rsa-{{ item.name }}/easyrsa3/vars'
+  with_items: "{{ openvpn_groups }}"
+
+- name: create server directory
+  file:
+    path: /etc/openvpn/server/{{ item.name }}
+    state: directory
+    mode: '0755'
+  with_items: "{{ openvpn_groups }}"
+
+- name: copy certificate authority
+  copy:
+    src: /usr/local/src/easy-rsa-{{ item.name }}/easyrsa3/pki/ca.crt
+    dest: /etc/openvpn/server/{{ item.name }}/
+    remote_src: yes
+  with_items: "{{ openvpn_groups }}"
+
+- name: copy key
+  copy:
+    src: /usr/local/src/easy-rsa-{{ item.name }}/easyrsa3/pki/private/{{ item.name }}.key
+    dest: /etc/openvpn/server/{{ item.name }}/
+    mode: '0600'
+    remote_src: yes
+  with_items: "{{ openvpn_groups }}"
+
+- name: copy certificate
+  copy:
+    src: /usr/local/src/easy-rsa-{{ item.name }}/easyrsa3/pki/issued/{{ item.name }}.crt
+    dest: /etc/openvpn/server/{{ item.name }}/
+    remote_src: yes
+  with_items: "{{ openvpn_groups }}"
+
+- name: generate HMAC key
+  command: openvpn --genkey --secret ta.key
+  args:
+    chdir: /etc/openvpn/server/{{ item.name }}
+    creates: /etc/openvpn/server/{{ item.name }}/ta.key
+  with_items: "{{ openvpn_groups }}"
+
+- name: copy Diffie-Hellman pem
+  copy:
+    src: dh.pem
+    dest: /etc/openvpn/server/dh.pem
+  notify: restart openvpn
+
+- name: create ccd directory
+  file:
+    path: /etc/openvpn/server/ccd
+    state: directory
+
+- name: make CentOS 7 specific settings
+  block:
+    # fix error "AUTH-PAM: BACKGROUND: user '<user>' failed to authenticate: System error"
+    - name: enable pam auth
+      replace:
+        dest: /usr/lib/systemd/system/openvpn-server@.service
+        regexp: '^(CapabilityBoundingSet(?!.*\bCAP_AUDIT_WRITE\b).*)$'
+        replace: '\1 CAP_AUDIT_WRITE'
+        backup: yes
+
+    # fix error "openvpn_execve: unable to fork: Resource temporarily unavailable (errno=11)"
+    - name: enable service fork
+      replace:
+        path: /usr/lib/systemd/system/openvpn-server@.service
+        regexp: '^(LimitNPROC=10)'
+        replace: '# \1'
+        backup: yes
+
+    # fix error on CentOS 7 "Could not access file 'ccd/[...]': Permission denied (errno=13)
+    # fix error on Alpine "Options error: --client-config-dir fails with 'ccd': No such file or directory (errno=2)"
+    # comment: access to "ccd" directory needs to assign static IP-addresses to clients;
+    # permissions must be o=r+x for both "/etc/openvpn/server" and "/etc/openvpn/server/ccd" to allow read by "nobody"
+    - name: enable access to ccd directory
+      file:
+        path: /etc/openvpn/server
+        state: directory
+        mode: '0755'
+
+    - name: force systemd to reread configs
+      systemd:
+        daemon_reload: yes
+  when: ansible_distribution == "CentOS" and ansible_distribution_major_version == '7'
+
+- name: create directory for logs
+  file:
+    path: /var/log/openvpn
+    state: directory
+
+- name: create server config
+  template:
+    src: "{{ item.name }}.conf.j2"
+    dest: /etc/openvpn/server/{{ item.name }}.conf
+  with_items: "{{ openvpn_groups }}"
+  notify: restart openvpn
+
+- name: make Alpine specific settings
+  block:
+    - name: create a symbolic link of the config
+      file:
+        src: /etc/openvpn/server/{{ item.name }}.conf
+        dest: /etc/openvpn/{{ item.name }}.conf
+        state: link
+      with_items: "{{ openvpn_groups }}"
+      register: config
+
+    - name: create a symbolic link of the init.d script
+      file:
+        src: /etc/init.d/openvpn
+        dest: /etc/init.d/openvpn.{{ item.name }}
+        state: link
+      with_items: "{{ openvpn_groups }}"
+  when: ansible_distribution == "Alpine" and ansible_distribution_major_version == '3'
+
+- name: start the openvpn daemon and enable it to start at boot
+  service:
+    name: '{% if ansible_os_family == "RedHat" %}openvpn-server@{{ item.name }}{% elif ansible_os_family == "Alpine" %}openvpn.{{ item.name }}{% endif %}'
+    state: started
+    enabled: yes
+  with_items: "{{ openvpn_groups }}"
+
+# ------------------- client config ------------------- #
+- name: build client full
+  command: ./easyrsa build-client-full {{ item.1.name }} nopass
+  args:
+    chdir: /usr/local/src/easy-rsa-{{ item.0.name }}/easyrsa3
+    creates: /usr/local/src/easy-rsa-{{ item.0.name }}/easyrsa3/pki/issued/{{ item.1.name }}.crt
+  environment:
+    EASYRSA_VARS_FILE: '/usr/local/src/easy-rsa-{{ item.0.name }}/easyrsa3/vars'
+  with_subelements:
+    - "{{ openvpn_groups }}"
+    - devices
+
+- name: create client directory
+  file:
+    path: /etc/openvpn/client/{{ item.1.name }}
+    state: directory
+  with_subelements:
+    - "{{ openvpn_groups }}"
+    - devices
+
+- name: copy certificate authority
+  copy:
+    src: /usr/local/src/easy-rsa-{{ item.0.name }}/easyrsa3/pki/ca.crt
+    dest: /etc/openvpn/client/{{ item.1.name }}/ca.crt
+    remote_src: yes
+  with_subelements:
+    - "{{ openvpn_groups }}"
+    - devices
+
+- name: copy key
+  copy:
+    src: /usr/local/src/easy-rsa-{{ item.0.name }}/easyrsa3/pki/private/{{ item.1.name }}.key
+    dest: /etc/openvpn/client/{{ item.1.name }}/{{ item.1.name }}.key
+    remote_src: yes
+  with_subelements:
+    - "{{ openvpn_groups }}"
+    - devices
+
+- name: copy certificate
+  copy:
+    src: /usr/local/src/easy-rsa-{{ item.0.name }}/easyrsa3/pki/issued/{{ item.1.name }}.crt
+    dest: /etc/openvpn/client/{{ item.1.name }}/{{ item.1.name }}.crt
+    remote_src: yes
+  with_subelements:
+    - "{{ openvpn_groups }}"
+    - devices
+  changed_when: false
+
+- name: delete service information from certificate
+  command: "sed -i -n -e '/-----BEGIN/,/-----END/ p' /etc/openvpn/client/{{ item.1.name }}/{{ item.1.name }}.crt"
+  with_subelements:
+    - "{{ openvpn_groups }}"
+    - devices
+  changed_when: false
+
+- name: copy HMAC key
+  copy:
+    src: /etc/openvpn/server/{{ item.0.name }}/ta.key
+    dest: /etc/openvpn/client/{{ item.1.name }}/ta.key
+    remote_src: yes
+  with_subelements:
+    - "{{ openvpn_groups }}"
+    - devices
+
+# devices is vars must be unique, otherwise new user will override previous user with the same name
+- name: create system user for pam authentication
+  user:
+    name: "{{ item.1.name }}"
+    system: yes
+    shell: /bin/false
+    create_home: no
+    password: "{{ item.1.password | password_hash('sha512') }}"
+  with_subelements:
+    - "{{ openvpn_groups }}"
+    - devices
+  changed_when: false
+
+- name: create local temporary directory
+  tempfile:
+    state: directory
+  register: tempdir
+  delegate_to: '127.0.0.1'
+  become: no
+  changed_when: false
+
+- name: install dependency for 'synchronize'
+  apk:
+    name: rsync
+    update_cache: yes
+  when: ansible_distribution == "Alpine" and ansible_distribution_major_version == '3'
+
+- name: copy certificates and keys to local temporary directory
+  synchronize:
+    mode: pull
+    src: /etc/openvpn/client/
+    dest: "{{ tempdir.path }}"
+  changed_when: false
+
+- name: create config for linux in local temporary directory
+  template:
+    src: "{{ item.0.name }}.ovpn.j2"
+    dest: "{{ tempdir.path }}/{{ item.1.name }}/{{ item.1.name }}_lin.ovpn"
+  vars:
+    ca: "{{ lookup('file', '{{ tempdir.path }}/{{ item.1.name }}/ca.crt') }}"
+    cert: "{{ lookup('file', '{{ tempdir.path }}/{{ item.1.name }}/{{ item.1.name }}.crt') }}"
+    key: "{{ lookup('file', '{{ tempdir.path }}/{{ item.1.name }}/{{ item.1.name }}.key') }}"
+    ta: "{{ lookup('file', '{{ tempdir.path }}/{{ item.1.name }}/ta.key') }}"
+  with_subelements:
+    - "{{ openvpn_groups }}"
+    - devices
+  delegate_to: '127.0.0.1'
+
+- name: create config for windows in local temporary directory
+  copy:
+    src: "{{ tempdir.path }}/{{ item.1.name }}/{{ item.1.name }}_lin.ovpn"
+    dest: "{{ tempdir.path }}/{{ item.1.name }}/{{ item.1.name }}_win.ovpn"
+    remote_src: yes
+  with_subelements:
+    - "{{ openvpn_groups }}"
+    - devices
+  delegate_to: '127.0.0.1'
+  changed_when: false
+
+- name: disable user in config for windows
+  replace:
+    path: "{{ tempdir.path }}/{{ item.1.name }}/{{ item.1.name }}_win.ovpn"
+    regexp: '^(user\snobody)$'
+    replace: ';\1'
+  with_subelements:
+    - "{{ openvpn_groups }}"
+    - devices
+  delegate_to: '127.0.0.1'
+  changed_when: false
+
+- name: disable group in config for windows
+  replace:
+    path: "{{ tempdir.path }}/{{ item.1.name }}/{{ item.1.name }}_win.ovpn"
+    regexp: '^(group\snobody)$'
+    replace: ';\1'
+  with_subelements:
+    - "{{ openvpn_groups }}"
+    - devices
+  delegate_to: '127.0.0.1'
+  changed_when: false
+
+- name: upload config for linux from temporary directory to remote server
+  copy:
+    src: "{{ tempdir.path }}/{{ item.1.name }}/{{ item.1.name }}_lin.ovpn"
+    dest: /etc/openvpn/client/{{ item.1.name }}/{{ item.1.name }}_lin.ovpn
+  with_subelements:
+    - "{{ openvpn_groups }}"
+    - devices
+
+- name: upload config for windows from temporary directory to remote server
+  copy:
+    src: "{{ tempdir.path }}/{{ item.1.name }}/{{ item.1.name }}_win.ovpn"
+    dest: /etc/openvpn/client/{{ item.1.name }}/{{ item.1.name }}_win.ovpn
+  with_subelements:
+    - "{{ openvpn_groups }}"
+    - devices
+
+- name: delete local temporary directory
+  file:
+    path: "{{ tempdir.path }}"
+    state: absent
+  when: tempdir.path is defined
+  delegate_to: '127.0.0.1'
+  changed_when: false
+
+# 'o+r' to allow read by user 'nobody'
+# name of file in 'ccd' must be the same as cert from task 'build client full'
+- name: configure network
+  template:
+    src: "ccd.j2"
+    dest: "/etc/openvpn/server/ccd/{{ item.1.name }}"
+    owner: nobody
+    group: nobody
+  with_subelements:
+    - "{{ openvpn_groups }}"
+    - devices
+
+- name: create local directory for certificates and configs (optional)
+  file:
+    path: /tmp/openvpn
+    state: directory
+  delegate_to: '127.0.0.1'
+  become: no
+
+- name: download certificates and configs to local directory (optional)
+  synchronize:
+    mode: pull
+    src: /etc/openvpn/client/
+    dest: /tmp/openvpn/
+  changed_when: false

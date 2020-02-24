@@ -1,157 +1,139 @@
 ---
-# https://github.com/TelegramMessenger/MTProxy
+- name: make CentOS 7 specific settings
+  block:
+    # https://github.com/TelegramMessenger/MTProxy
+    - name: install packages
+      yum:
+        name: "{{ packages }}"
+      vars:
+        packages:
+          - openssl-devel
+          - zlib-devel
 
-- name: MTPROXY | PACKAGES INSTALL
-  yum:
-    name: "{{ packages_install }}"
-    state: installed
-  tags:
-  - mtproxy
+    - name: download sources
+      git:
+        repo: https://github.com/TelegramMessenger/MTProxy.git
+        dest: /usr/local/src/MTProxy
 
-- name: MTPROXY | CLONE GIT REPO
-  git:
-    repo: https://github.com/TelegramMessenger/MTProxy.git
-    dest: /usr/local/src/MTProxy
-    update: no
-  tags:
-  - mtproxy
+    - name: check if binary was built
+      stat:
+        path: /usr/local/src/MTProxy/objs
+      register: objs_dir
 
-- name: MTPROXY | CHECK IF objs DIRECTORY EXISTS
-  stat:
-    path: /usr/local/src/MTProxy/objs
-  register: objs_dir
-  tags:
-  - mtproxy
+    - name: build
+      make:
+        chdir: /usr/local/src/MTProxy
+      when: not (objs_dir.stat.exists and objs_dir.stat.isdir)
 
-- name: MTPROXY | MAKE
-  make:
-    chdir: /usr/local/src/MTProxy
-  when: not (objs_dir.stat.exists and objs_dir.stat.isdir)
-  tags:
-  - mtproxy
+    # Obtain a secret, used to connect to telegram servers.
+    - name: download a secret, used to connect to telegram servers
+      get_url:
+        url: https://core.telegram.org/getProxySecret
+        dest: /usr/local/src/MTProxy/objs/bin/proxy-secret
+        mode: 0644
 
-# Obtain a secret, used to connect to telegram servers.
-- name: MTPROXY | DOWNLOAD PROXY SECRET
-  get_url:
-    url: https://core.telegram.org/getProxySecret
-    dest: /usr/local/src/MTProxy/objs/bin/proxy-secret
-    mode: 0644
-  tags:
-  - mtproxy
+    # Obtain current telegram configuration. It can change (occasionally), so we encourage you to update it once per day.
+    - name: download current telegram configuration
+      get_url:
+        url: https://core.telegram.org/getProxyConfig
+        dest: /usr/local/src/MTProxy/objs/bin/proxy-multi.conf
+        mode: 0644
 
-# Obtain current telegram configuration. It can change (occasionally), so we encourage you to update it once per day.
-- name: MTPROXY | DOWNLOAD PROXY CONFIG
-  get_url:
-    url: https://core.telegram.org/getProxyConfig
-    dest: /usr/local/src/MTProxy/objs/bin/proxy-multi.conf
-    mode: 0644
-  tags:
-  - mtproxy
+    - name: add cron to update telegram configuration everyday at 2 AM
+      cron:
+        name: "Update telegram configuration"
+        minute: "0"
+        hour: "2"
+        job: "curl -L https://core.telegram.org/getProxyConfig -o /usr/local/src/MTProxy/objs/bin/proxy-multi.conf"
+        state: present
 
-- name: MTPROXY | ADD CRON JOB TO UPDATE proxy-multi.conf EVERYDAY AT 2 AM
-  cron:
-    name: "Update telegram configuration"
-    minute: "0"
-    hour: "2"
-    job: "curl -L https://core.telegram.org/getProxyConfig -o /usr/local/src/MTProxy/objs/bin/proxy-multi.conf"
-    state: present
-  tags:
-  - mtproxy
+    - name: check if secret to be used to connect to proxy generated
+      stat:
+        path: /usr/local/src/MTProxy/objs/bin/connect-secret
+      register: connect_secret_file
 
-- name: MTPROXY | CHECK IF connect-secret FILE EXISTS
-  stat:
-    path: /usr/local/src/MTProxy/objs/bin/connect-secret
-  register: connect_secret_file
-  tags:
-  - mtproxy
+    # Generate a secret to be used by users to connect to your proxy.
+    - name: generate a secret
+      shell: head -c 16 /dev/urandom | xxd -ps
+      register: connect_secret_generated
+      when: not connect_secret_file.stat.exists
 
-# Generate a secret to be used by users to connect to your proxy.
-- name: MTPROXY | GENERATE PASSWORD FOR connect-secret FILE
-  shell: head -c 16 /dev/urandom | xxd -ps
-  register: connect_secret_generated
-  when: not connect_secret_file.stat.exists
-  tags:
-  - mtproxy
+    - name: save a secret to a file
+      copy:
+        content: "{{ connect_secret_generated.stdout }}"
+        dest: /usr/local/src/MTProxy/objs/bin/connect-secret
+        mode: 0644
+      when: not connect_secret_file.stat.exists
 
-- name: MTPROXY | SAVE PASSWORD TO connect-secret FILE
-  copy:
-    content: "{{ connect_secret_generated.stdout }}"
-    dest: /usr/local/src/MTProxy/objs/bin/connect-secret
-    mode: 0644
-  when: not connect_secret_file.stat.exists
-  tags:
-  - mtproxy
+    - name: refresh facts with latest information
+      setup:
 
-- name: MTPROXY | RUN SETUP MODULE TO GET LATEST INFORMARION ABOUT FACTS
-  setup:
-  tags:
-  - mtproxy
+    - name: read a secret from a file (in base64)
+      slurp:
+        src: /usr/local/src/MTProxy/objs/bin/connect-secret
+      register: connect_secret_b64
 
-- name: MTPROXY | READ CONTENT OF connect-secret FILE
-  slurp:
-    src: /usr/local/src/MTProxy/objs/bin/connect-secret
-  register: connect_secret_saved_b64
-  tags:
-  - mtproxy
-  - resend_mtproxy_email
+    - name: decode a secret from base64
+      set_fact:
+        connect_secret_decode: "{{ connect_secret_b64['content'] | b64decode }}"
 
-- name: MTPROXY | SET FACT ABOUT PASSWORD IN connect-secret FILE
-  set_fact:
-    connect_secret_saved: "{{ connect_secret_saved_b64['content'] | b64decode }}"
-  tags:
-  - mtproxy
-  - resend_mtproxy_email
+    - name: create systemd service unit
+      template:
+        src: MTProxy.service.j2
+        dest: /etc/systemd/system/MTProxy.service
+      register: mtproxy_service
 
-- name: MTPROXY | SYSTEMD SERVICE CREATE
-  template:
-    src: MTProxy.service.j2
-    dest: /etc/systemd/system/MTProxy.service
-  register: mtproxy_service
-  notify: MTPROXY | SERVICE RESTART
-  tags:
-  - mtproxy
+    - name: force systemd to reread configs
+      systemd:
+        daemon_reload: yes
+      when: mtproxy_service.changed
 
-- name: MTPROXY | FORCE SYSTEMD TO REREAD CONFIGS
-  systemd:
-    daemon_reload: yes
-  when: mtproxy_service.changed
-  tags:
-  - mtproxy
+    - name: start service and make it start on boot
+      service:
+        name: MTProxy
+        state: started
+        enabled: yes
 
-- name: MTPROXY | SERVICE START AND ENABLE
-  service:
-    name: MTProxy
-    state: started
-    enabled: yes
-  tags:
-  - mtproxy
+    # Due to some ISPs detecting MTProxy by packet sizes, random padding is added to packets if such mode is enabled.
+    # It's only enabled for clients which request it.
+    # Add dd prefix to secret (cafe...babe => ddcafe...babe) to enable this mode on client side.
+    - name: generate links to be used to connect to proxy
+      set_fact:
+        mtproxy_web_link: "https://t.me/proxy?server={{ mtproxy_address }}&port={{ mtproxy_port }}&secret=dd{{ connect_secret_decode }}"
+        mtproxy_tg_link: "tg://proxy?server={{ mtproxy_address }}&port={{ mtproxy_port }}&secret=dd{{ connect_secret_decode }}"
 
-# TO ENABLE RANDOM PADDING ADD dd PREFIX TO secret
-- name: MTPROXY | REGISTER LINK TO VAR
-  set_fact:
-    mtproxy_http_link: "https://t.me/proxy?server={{ proxy_address }}&port={{ proxy_port }}&secret=dd{{ connect_secret_saved }}"
-    mtproxy_tg_link: "tg://proxy?server={{ proxy_address }}&port={{ proxy_port }}&secret=dd{{ connect_secret_saved }}"
-  tags:
-  - mtproxy
-  - resend_mtproxy_email
+    - name: print links
+      debug:
+        msg: |
+          Link for browser: {{ mtproxy_web_link }}
+          Direct link for Telegram app: {{ mtproxy_tg_link }}
+  when: ansible_distribution == "CentOS" and ansible_distribution_major_version == '7'
 
-- name: MTPROXY | SEND LINK BY EMAIL
-  mail:
-    host: mx.domain.com
-    port: 465
-    username: no-reply@domain.com
-    password: "{{ vault_email_no_reply_pwd }}"
-    from: no-reply@domain.com
-    to: some_user@google.com
-    bcc: "{{ vault_email_bcc_address }}"
-    subject: "Ansible - TG MTProxy access links"
-    body: |
-      Link to proxy server:
-      {{ mtproxy_http_link }}
-      
-      Direct link for Telegram app:
-      {{ mtproxy_tg_link }}
-  delegate_to: localhost
-  tags:
-  - mtproxy
-  - resend_mtproxy_email
+- name: make Alpine specific settings
+  block:
+    # https://hub.docker.com/r/telegrammessenger/proxy/
+    - name: install dependencies for docker module
+      pip:
+        name: docker
+        executable: pip3
+
+    - name: pull the telegram messenger mtproto image
+      docker_image:
+        name: telegrammessenger/proxy:1.3
+        source: pull
+
+    - name: run the telegram messenger mtproto proxy
+      docker_container:
+        name: mtproto-proxy
+        image: telegrammessenger/proxy:1.3
+        state: started
+        restart_policy: on-failure # unless-stopped
+#        restart: yes
+        volumes:
+          - proxy-config:/data
+        ports:
+          - "{{ mtproxy_port }}:443"
+        env:
+          SECRET: "{{ mtproxy_secret }}"
+          WORKERS: "1"
+  when: ansible_distribution == "Alpine" and ansible_distribution_major_version == '3'

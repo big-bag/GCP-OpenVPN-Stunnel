@@ -1,0 +1,9 @@
+{
+  "os_username": "[USERNAME]",
+  "os_user_key": ".secrets/id_rsa.pub",
+  "gcp_project": "[GCP_PROJECT_ID]",
+  "gcp_region": "us-east1",
+  "gcp_zone": "us-east1-b",
+  "gcp_image": "alpine-3-11-3-v20200223-1582474737",
+  "gcp_min_cpu": "Intel Haswell"
+}

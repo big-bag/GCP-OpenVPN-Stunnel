@@ -1,0 +1,41 @@
+---
+- name: make Alpine specific settings
+  block:
+    # ------------------- install docker ------------------- #
+    # https://wiki.alpinelinux.org/wiki/Docker
+    - name: install dependencies for docker engine
+      apk:
+        name: [ 'libseccomp', 'ca-certificates', 'iptables' ]
+        update_cache: yes
+
+    - name: install docker
+      apk:
+        name: docker
+        state: latest
+        update_cache: yes
+        repository: http://dl-cdn.alpinelinux.org/alpine/v3.10/community
+  when: ansible_distribution == "Alpine" and ansible_distribution_major_version == '3'
+
+- name: create a directory if it does not exist
+  file:
+    path: /etc/docker
+    state: directory
+
+- name: configure the default logging driver
+  copy:
+    content: |
+      {
+        "log-driver": "json-file",
+        "log-opts": {
+          "max-size": "10m",
+          "max-file": "3"
+        }
+      }
+    dest: /etc/docker/daemon.json
+  notify: restart docker
+
+- name: start the docker daemon and enable it to start at boot
+  service:
+    name: docker
+    state: started
+    enabled: yes

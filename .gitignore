@@ -1,0 +1,36 @@
+# ------------------- Common ------------------- #
+.secrets/*
+
+# ------------------- Packer ------------------- #
+# https://github.com/github/gitignore/blob/master/Packer.gitignore
+
+# Cache objects
+packer_cache/
+
+# Output build directory
+output-*/
+
+packer.vars.json
+
+# ------------------- Terraform ------------------- #
+# https://github.com/github/gitignore/blob/master/Terraform.gitignore
+
+# Local .terraform directories
+**/.terraform/*
+
+# .tfstate files
+*.tfstate
+*.tfstate.*
+
+# Ignore any .tfvars files that are generated automatically for each Terraform run. Most
+# .tfvars files are managed as part of configuration and so should be included in
+# version control.
+*.tfvars.json
+
+# Include tfplan files to ignore the plan output of command: terraform plan -out=tfplan
+*tfplan*
+
+# ------------------- Absible ------------------- #
+inventory/*
+host_vars/instance-1/vault.yml
+roles/openvpn/files/dh.pem

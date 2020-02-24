@@ -1,0 +1,6 @@
+---
+- name: restart openvpn
+  service:
+    name: '{% if ansible_os_family == "RedHat" %}openvpn-server@{{ item.name }}{% elif ansible_os_family == "Alpine" %}openvpn.{{ item.name }}{% endif %}'
+    state: restarted
+  with_items: "{{ openvpn_groups }}"

@@ -1,0 +1,9 @@
+---
+vault_openvpn_address:     '[DOMAIN OR IP-ADDRESS]'
+vault_stunnel_address:     '[DOMAIN OR IP-ADDRESS]'
+vault_mtproxy_address:     '[DOMAIN OR IP-ADDRESS]'
+vault_mtproxy_secret:      '[SECRET]'
+
+vault_password_router_01:  'Ex@mple Pa$S'
+vault_password_client_01:  'Ex@mple Pa$S'
+vault_password_stunnel_01: 'Ex@mple Pa$S'

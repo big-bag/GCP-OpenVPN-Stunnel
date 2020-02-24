@@ -1,0 +1,15 @@
+# define the fixed IP address
+ifconfig-push {{ item.1.ip_client }} {{ item.1.ip_server }}
+{% if 'client' in item.0.name %}
+# redirect all traffic via the VPN
+push "redirect-gateway def1"
+
+# exclude certain IP ranges (not sets of domain names!) / Ignoring redirect-gateway
+# push "route <vps-ip-address> 255.255.255.255 net_gateway"
+
+# DNS server addresses
+push "dhcp-option DNS 1.1.1.1"
+push "dhcp-option DNS 1.0.0.1"
+push "dhcp-option DNS 8.8.8.8"
+push "dhcp-option DNS 8.8.4.4"
+{% endif %}

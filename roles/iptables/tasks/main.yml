@@ -1,0 +1,581 @@
+---
+- name: install packages
+  apk:
+    name: "{{ packages }}"
+    update_cache: yes
+  vars:
+    packages:
+      - iptables
+      - ip6tables
+  when:
+    - ansible_facts['distribution'] == "Alpine"
+    - ansible_facts['distribution_major_version'] == "3"
+
+- name: create script to delete all rules and allow all traffic
+  copy:
+    content: |
+      echo "Stopping firewall and allowing everyone..."
+      iptables -P INPUT ACCEPT
+      iptables -P FORWARD ACCEPT
+      iptables -P OUTPUT ACCEPT
+      iptables -F
+      iptables -X
+      iptables -t nat -F
+      iptables -t nat -X
+      iptables -t mangle -F
+      iptables -t mangle -X
+      ip6tables -P INPUT ACCEPT
+      ip6tables -P FORWARD ACCEPT
+      ip6tables -P OUTPUT ACCEPT
+      ip6tables -F
+      ip6tables -X
+      ip6tables -t nat -F
+      ip6tables -t nat -X
+      ip6tables -t mangle -F
+      ip6tables -t mangle -X
+    dest: /root/fw.stop
+    mode: '0755'
+
+- name: delete all rules and allow all traffic
+  command: /bin/sh -c "/root/fw.stop"
+  when: disable_all_rules == "yes" or
+        delete_rules_first == "yes"
+
+- name: allow loopback traffic
+  block:
+    - iptables:
+        chain: INPUT
+        in_interface: lo
+        jump: ACCEPT
+
+    - iptables:
+        chain: INPUT
+        in_interface: ! lo
+        source: 127.0.0.0/8
+        jump: REJECT
+
+    - iptables:
+        chain: OUTPUT
+        out_interface: lo
+        jump: ACCEPT
+  when: disable_all_rules == "no"
+
+- name: allow icmp
+  block:
+    - iptables:
+        chain: INPUT
+        protocol: icmp
+        match: icmp
+        icmp_type: "{{ item }}"
+        limit: 1/second
+        jump: ACCEPT
+      loop:
+        - echo-request
+        - fragmentation-needed
+        - source-quench
+
+    - iptables:
+        chain: OUTPUT
+        protocol: icmp
+        jump: ACCEPT
+  when: disable_all_rules == "no"
+
+- name: allow connect to ssh from outside
+  block:
+    - iptables:
+        chain: INPUT
+        in_interface: "{{ ansible_default_ipv4.interface }}"
+        protocol: tcp
+        match: conntrack
+        ctstate: NEW,ESTABLISHED
+        destination_port: '22'
+        jump: ACCEPT
+
+    - iptables:
+        chain: OUTPUT
+        out_interface: "{{ ansible_default_ipv4.interface }}"
+        protocol: tcp
+        match: conntrack
+        ctstate: ESTABLISHED
+        source_port: '22'
+        jump: ACCEPT
+  when: disable_all_rules == "no"
+
+- name: allow dns and ntp coming from server
+  block:
+    - iptables:
+        chain: OUTPUT
+        out_interface: "{{ ansible_default_ipv4.interface }}"
+        protocol: "{{ item[0] }}"
+        match: conntrack
+        ctstate: NEW,ESTABLISHED
+        destination_port: "{{ item[1] }}"
+        jump: ACCEPT
+      with_nested:
+        - [ 'tcp', 'udp' ]
+        - [ '53', '123' ]
+
+    - iptables:
+        chain: INPUT
+        in_interface: "{{ ansible_default_ipv4.interface }}"
+        protocol: "{{ item[0] }}"
+        match: conntrack
+        ctstate: ESTABLISHED
+        source_port: "{{ item[1] }}"
+        jump: ACCEPT
+      with_nested:
+        - [ 'tcp', 'udp' ]
+        - [ '53', '123' ]
+  when: disable_all_rules == "no"
+
+- name: allow server to initiate HTTP requests to be able to update itself.
+  block:
+    - name: allow http/s coming from server
+      iptables:
+        chain: OUTPUT
+        out_interface: "{{ ansible_default_ipv4.interface }}"
+        protocol: tcp
+        match: conntrack
+        ctstate: NEW,ESTABLISHED
+        destination_port: "{{ item }}"
+        jump: ACCEPT
+      loop:
+        - '80'
+        - '443'
+
+    - iptables:
+        chain: INPUT
+        in_interface: "{{ ansible_default_ipv4.interface }}"
+        protocol: tcp
+        match: conntrack
+        ctstate: ESTABLISHED
+        source_port: "{{ item }}"
+        jump: ACCEPT
+      loop:
+        - '80'
+        - '443'
+  when: disable_all_rules == "no"
+
+# allow redirect mail traffic (ports 25, 993, 465) and/or http/s traffic (ports 80, 443) that comes from the internet to the interface to which the router is connected.
+- name: allow redirect mail and and/or http/s traffic from internet to router
+  block:
+    - name: allow connect to openvpn server
+      iptables:
+        chain: INPUT
+        in_interface: "{{ ansible_default_ipv4.interface }}"
+        protocol: tcp
+        match: conntrack
+        ctstate: NEW,ESTABLISHED
+        destination_port: "{{ openvpn_port }}"
+        jump: ACCEPT
+
+    - iptables:
+        chain: OUTPUT
+        out_interface: "{{ ansible_default_ipv4.interface }}"
+        protocol: tcp
+        match: conntrack
+        ctstate: ESTABLISHED
+        source_port: "{{ openvpn_port }}"
+        jump: ACCEPT
+
+    - name: set ip forwarding on
+      sysctl:
+        name: net.ipv4.ip_forward
+        value: '1'
+        sysctl_set: yes
+
+    - name: set variables for openvpn interfaces
+      set_fact:
+        tun_interface_router:  "{{ openvpn_groups.0.tun_interface }}"
+
+    - name: allow redirect mail and http/s traffic coming from internet to internal services
+      iptables:
+        table: nat
+        chain: PREROUTING
+        in_interface: "{{ ansible_default_ipv4.interface }}"
+        protocol: tcp
+        destination_port: "{{ item[1] }}"
+        jump: DNAT
+        to_destination: "{{ item[0].ip_client }}:{{ item[1] }}"
+      with_nested:
+        - "{{ openvpn_groups.0.devices }}"
+        - "{{ list }}"
+      vars:
+        mail: "{{ True if allow_forward_mail == \"yes\" else False }}"
+        http: "{{ True if allow_forward_http == \"yes\" else False }}"
+        list: "{{ '[' +
+                         mail|ternary('\"25\",\"993\",\"465\",',' ') +
+                         http|ternary('\"80\",\"443\",',' ') +
+              ']' }}"
+
+    - iptables:
+        chain: FORWARD
+        in_interface: "{{ ansible_default_ipv4.interface }}"
+        out_interface: "{{ tun_interface_router }}"
+        protocol: tcp
+        syn: match
+        destination: "{{ item[0].ip_client }}"
+        destination_port: "{{ item[1] }}"
+        match: conntrack
+        ctstate: NEW
+        jump: ACCEPT
+      with_nested:
+        - "{{ openvpn_groups.0.devices }}"
+        - "{{ list }}"
+      vars:
+        mail: "{{ True if allow_forward_mail == \"yes\" else False }}"
+        http: "{{ True if allow_forward_http == \"yes\" else False }}"
+        list: "{{ '[' +
+                         mail|ternary('\"25\",\"993\",\"465\",',' ') +
+                         http|ternary('\"80\",\"443\",',' ') +
+              ']' }}"
+
+    - iptables:
+        chain: FORWARD
+        in_interface: "{{ ansible_default_ipv4.interface }}"
+        out_interface: "{{ tun_interface_router }}"
+        destination: "{{ item.ip_client }}"
+        match: conntrack
+        ctstate: ESTABLISHED,RELATED
+        jump: ACCEPT
+      loop: "{{ openvpn_groups.0.devices }}"
+
+    - iptables:
+        chain: FORWARD
+        in_interface: "{{ tun_interface_router }}"
+        out_interface: "{{ ansible_default_ipv4.interface }}"
+        source: "{{ item.ip_client }}"
+        match: conntrack
+        ctstate: ESTABLISHED,RELATED
+        jump: ACCEPT
+      loop: "{{ openvpn_groups.0.devices }}"
+
+    - iptables:
+        table: nat
+        chain: POSTROUTING
+        out_interface: "{{ tun_interface_router }}"
+        protocol: tcp
+        destination_port: "{{ item[1] }}"
+        destination: "{{ item[0].ip_client }}"
+        jump: SNAT
+        to_source: "{{ item[0].ip_server }}"
+      with_nested:
+        - "{{ openvpn_groups.0.devices }}"
+        - "{{ list }}"
+      vars:
+        mail: "{{ True if allow_forward_mail == \"yes\" else False }}"
+        http: "{{ True if allow_forward_http == \"yes\" else False }}"
+        list: "{{ '[' +
+                         mail|ternary('\"25\",\"993\",\"465\",',' ') +
+                         http|ternary('\"80\",\"443\",',' ') +
+              ']' }}"
+  when:
+    - disable_all_rules == "no"
+    - allow_forward_mail == "yes" or
+      allow_forward_http == "yes"
+
+# allow redirect rdp traffic (port 3389) that comes from client devices connected through the stunnel to the interface to which the router is connected.
+- name: allow redirect rdp from stunnel clients to router
+  block:
+    - name: allow connect to openvpn and stunnel servers
+      iptables:
+        chain: INPUT
+        in_interface: "{{ ansible_default_ipv4.interface }}"
+        protocol: tcp
+        match: conntrack
+        ctstate: NEW,ESTABLISHED
+        destination_port: "{{ item }}"
+        jump: ACCEPT
+      loop:
+        - "{{ openvpn_port }}"
+        - "{{ stunnel_port }}"
+
+    - iptables:
+        chain: OUTPUT
+        out_interface: "{{ ansible_default_ipv4.interface }}"
+        protocol: tcp
+        match: conntrack
+        ctstate: ESTABLISHED
+        source_port: "{{ item }}"
+        jump: ACCEPT
+      loop:
+        - "{{ openvpn_port }}"
+        - "{{ stunnel_port }}"
+
+    - name: set ip forwarding on
+      sysctl:
+        name: net.ipv4.ip_forward
+        value: '1'
+        sysctl_set: yes
+
+    - name: set variables for openvpn interfaces
+      set_fact:
+        tun_interface_router:  "{{ openvpn_groups.0.tun_interface }}"
+        tun_interface_stunnel: "{{ openvpn_groups.2.tun_interface }}"
+
+    - name: allow redirect rdp coming from stunnel clients to internal server
+      iptables:
+        table: nat
+        chain: PREROUTING
+        in_interface: "{{ tun_interface_stunnel }}"
+        protocol: tcp
+        destination_port: "{{ item[1] }}"
+        jump: DNAT
+        to_destination: "{{ item[0].ip_client }}:{{ item[1] }}"
+      with_nested:
+        - "{{ openvpn_groups.0.devices }}"
+        - [ '3389' ]
+
+    - iptables:
+        chain: FORWARD
+        in_interface: "{{ tun_interface_stunnel }}"
+        out_interface: "{{ tun_interface_router }}"
+        protocol: tcp
+        syn: match
+        destination: "{{ item.ip_client }}"
+        destination_port: '3389'
+        match: conntrack
+        ctstate: NEW
+        jump: ACCEPT
+      loop: "{{ openvpn_groups.0.devices }}"
+
+    - iptables:
+        chain: FORWARD
+        in_interface: "{{ tun_interface_stunnel }}"
+        out_interface: "{{ tun_interface_router }}"
+        destination: "{{ item.ip_client }}"
+        match: conntrack
+        ctstate: ESTABLISHED,RELATED
+        jump: ACCEPT
+      loop: "{{ openvpn_groups.0.devices }}"
+
+    - iptables:
+        chain: FORWARD
+        in_interface: "{{ tun_interface_router }}"
+        out_interface: "{{ tun_interface_stunnel }}"
+        source: "{{ item.ip_client }}"
+        match: conntrack
+        ctstate: ESTABLISHED,RELATED
+        jump: ACCEPT
+      loop: "{{ openvpn_groups.0.devices }}"
+
+    - iptables:
+        table: nat
+        chain: POSTROUTING
+        out_interface: "{{ tun_interface_router }}"
+        protocol: tcp
+        destination_port: '3389'
+        destination: "{{ item.ip_client }}"
+        jump: SNAT
+        to_source: "{{ item.ip_server }}"
+      loop: "{{ openvpn_groups.0.devices }}"
+  when:
+    - disable_all_rules == "no"
+    - allow_forward_rdp == "yes"
+
+- name: allow openvpn udp clients go to internet through server
+  block:
+    - name: allow openvpn udp clients connect to vpn server
+      iptables:
+        chain: INPUT
+        in_interface: "{{ ansible_default_ipv4.interface }}"
+        protocol: udp
+        match: conntrack
+        ctstate: NEW,ESTABLISHED
+        destination_port: "{{ openvpn_port }}"
+        jump: ACCEPT
+
+    - iptables:
+        chain: OUTPUT
+        out_interface: "{{ ansible_default_ipv4.interface }}"
+        protocol: udp
+        match: conntrack
+        ctstate: ESTABLISHED
+        source_port: "{{ openvpn_port }}"
+        jump: ACCEPT
+
+    - name: set ip forwarding on
+      sysctl:
+        name: net.ipv4.ip_forward
+        value: '1'
+        sysctl_set: yes
+
+    - name: set variables for client's interface and network
+      set_fact:
+        tun_interface_client: "{{ openvpn_groups.1.tun_interface }}"
+        network_client: "{{ openvpn_groups.1.network }}"
+
+    - name: allow forward traffic from clients to internet
+      iptables:
+        chain: FORWARD
+        in_interface: "{{ tun_interface_client }}"
+        out_interface: "{{ ansible_default_ipv4.interface }}"
+        source: "{{ network_client }}/24"
+        match: conntrack
+        ctstate: NEW
+        jump: ACCEPT
+
+    - name: allow forward between client's tun and physical network interfaces
+      iptables:
+        chain: FORWARD
+        in_interface: "{{ tun_interface_client }}"
+        out_interface: "{{ ansible_default_ipv4.interface }}"
+        source: "{{ network_client }}/24"
+        match: conntrack
+        ctstate: ESTABLISHED,RELATED
+        jump: ACCEPT
+
+    - iptables:
+        chain: FORWARD
+        in_interface: "{{ ansible_default_ipv4.interface }}"
+        out_interface: "{{ tun_interface_client }}"
+        match: conntrack
+        ctstate: ESTABLISHED,RELATED
+        jump: ACCEPT
+
+    - name: masquerade all packets as traffic from vpn server's physical network interface
+      iptables:
+        table: nat
+        chain: POSTROUTING
+        out_interface: "{{ ansible_default_ipv4.interface }}"
+        source: "{{ network_client }}/24"
+        jump: SNAT
+        to_source: "{{ ansible_default_ipv4.address }}"
+  when:
+    - disable_all_rules         == "no"
+    - allow_openvpn_udp_clients == "yes"
+
+- name: allow docker containers access internet
+  block:
+    - name: set ip forwarding on
+      sysctl:
+        name: net.ipv4.ip_forward
+        value: '1'
+        sysctl_set: yes
+
+    - name: allow docker containers access internet
+      iptables:
+        chain: FORWARD
+        in_interface: docker0
+        out_interface: "{{ ansible_default_ipv4.interface }}"
+        jump: ACCEPT
+
+    - iptables:
+        chain: FORWARD
+        in_interface: "{{ ansible_default_ipv4.interface }}"
+        out_interface: docker0
+        match: conntrack
+        ctstate: ESTABLISHED,RELATED
+        jump: ACCEPT
+
+    - name: masquerade all packets as traffic from physical network interface of vpn server
+      iptables:
+        table: nat
+        chain: POSTROUTING
+        out_interface: "{{ ansible_default_ipv4.interface }}"
+        source: "172.17.0.0/16"
+        jump: SNAT
+        to_source: "{{ ansible_default_ipv4.address }}"
+  when:
+    - disable_all_rules == "no"
+    - allow_docker_access_to_internet == "yes"
+
+#- name: log blocked traffic
+#  iptables:
+#    chain: "{{ item }}"
+#    match: limit
+#    limit: 3/minute
+#    jump: LOG
+#    log_prefix: "iptables_{{ item }}_denied: "
+#  loop:
+#    - INPUT
+#    - FORWARD
+#    - OUTPUT
+#  when: disable_all_rules == "no"
+
+- name: drop all other traffic
+  iptables:
+    chain: "{{ item[0] }}"
+    policy: DROP
+    ip_version: "{{ item[1] }}"
+  with_nested:
+    - [ 'INPUT', 'FORWARD', 'OUTPUT' ]
+    - [ 'ipv4', 'ipv6' ]
+  when: disable_all_rules == "no"
+
+- name: save iptables rules
+  block:
+    - name: install packages
+      yum:
+        name: iptables-services
+
+    - name: save iptables rules
+      shell: "{{ item }}-save > /etc/sysconfig/{{ item }}"
+      loop:
+        - iptables
+        - ip6tables
+  when:
+    - ansible_facts['distribution'] == "CentOS"
+    - ansible_facts['distribution_major_version'] == "7"
+
+- name: save iptables rules
+  command: "/etc/init.d/{{ item }} save"
+  loop:
+    - iptables
+    - ip6tables
+  when:
+    - ansible_facts['distribution'] == "Alpine"
+    - ansible_facts['distribution_major_version'] == "3"
+  changed_when: false
+
+- name: enable iptables daemon to start at boot
+  service:
+    name: "{{ item }}"
+    enabled: yes
+  loop:
+    - iptables
+    - ip6tables
+
+- name: restart docker
+  block:
+    - name: gather the package facts
+      package_facts:
+        manager: auto
+
+#    - name: print the package facts
+#      debug:
+#        var: ansible_facts.packages
+
+#    - name: check whether a package called docker is installed
+#      debug:
+#        msg: "{{ ansible_facts.packages['docker'] | length }} versions of docker are installed!"
+#      when: "'docker' in ansible_facts.packages"
+
+    - name: restart docker
+      service:
+        name: docker
+        state: restarted
+      when: "'docker' in ansible_facts.packages"
+  when:
+    - ansible_facts['distribution'] == "CentOS"
+    - ansible_facts['distribution_major_version'] == "7"
+
+- name: restart docker
+  block:
+    - name: gather the package facts
+      shell: apk info | grep ".*docker$"
+      register: packages
+      changed_when: false
+
+#    - name: print the package facts
+#      debug:
+#        msg: "{{ packages }}"
+#      when: "'docker' in packages.stdout"
+
+    - name: restart docker
+      shell: docker stop $(docker ps -a -q) ; service docker stop && service docker start
+      when: "'docker' in packages.stdout"
+      changed_when: false
+  when:
+    - ansible_facts['distribution'] == "Alpine"
+    - ansible_facts['distribution_major_version'] == "3"

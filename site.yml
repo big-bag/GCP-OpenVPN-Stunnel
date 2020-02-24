@@ -1,12 +1,74 @@
 ---
-- hosts: openvpn-srv
+- hosts: instance-1
   become: yes
   gather_facts: yes
+
+  pre_tasks:
+    - name: make Alpine specific settings
+      block:
+        # ------------------- resize partition ------------------- #
+        - name: install requirements to configure block device partitions
+          apk:
+            name: parted
+            update_cache: yes
+
+        # task used to check if partition 2 was encreased
+        - name: read device information about % unit
+          parted:
+            device: /dev/sda
+            unit: '%'
+          register: sda_info_in_percent
+
+        # task used to encrease partition 2
+        - name: read device information about s unit
+          parted:
+            device: /dev/sda
+            unit: s
+          register: sda_info
+
+        - name: remove partition number 2
+          parted:
+            device: /dev/sda
+            number: 2
+            state: absent
+          when: '{{ item.num }} == 2 and {{ item.end }} != 100.0'
+          loop: '{{ sda_info_in_percent.partitions }}'
+          register: partition_delete
+
+        - name: create a new primary partition for LVM
+          parted:
+            device: /dev/sda
+            number: 2
+            flags: [ lvm ]
+            state: present
+            part_start: '{{ item.begin }}s'
+            part_type: primary
+          when: '{{ item.num }} == 2'
+          loop: '{{ sda_info.partitions }}'
+
+        - name: resize physical volume
+          command: pvresize /dev/sda2
+          when: partition_delete.changed
+
+        - name: extend the logical volume to consume all remaining space in the volume group
+          lvol:
+            vg: vg0
+            lv: lv_root
+            size: +100%FREE
+
+        - name: install requirements to resize a xfs filesystem
+          apk:
+            name: xfsprogs-extra
+            update_cache: yes
+
+        - name: resize a xfs filesystem on logical volume
+          command: xfs_growfs /
+          when: partition_delete.changed
+      when: ansible_distribution == "Alpine" and ansible_distribution_major_version == '3'
+
   roles:
-  - iptables_default
-  - stunnel_server
-  - stunnel_client
-  - openvpn_server
-  - openvpn_client
-  - blacklist_bgp
-  - mtproxy
+    - openvpn
+    - stunnel
+    - docker
+    - mtproxy
+    - iptables

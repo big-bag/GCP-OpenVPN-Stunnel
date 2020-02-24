@@ -1,0 +1,15 @@
+---
+- name: restart docker
+  service:
+    name: docker
+    state: restarted
+  when:
+    - ansible_facts['distribution'] == "CentOS"
+    - ansible_facts['distribution_major_version'] == "7"
+
+# alpine fails restart docker service when containers is up
+- name: restart docker
+  shell: docker stop $(docker ps -a -q) ; service docker stop && service docker start # && sleep 5s && docker restart $(docker ps -a -q)
+  when:
+    - ansible_facts['distribution'] == "Alpine"
+    - ansible_facts['distribution_major_version'] == "3"

@@ -1,0 +1,4 @@
+{
+  "root_pass": "[PASSWORD]",
+  "gcp_sa_file": ".secrets/[GCP_PROJECT_ID]-[SOME_ID].json"
+}
