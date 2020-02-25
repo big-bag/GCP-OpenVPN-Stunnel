@@ -1,7 +1,7 @@
 # About
 This repository describes how to build an Alpine Linux image using a Packer, provision it using a Terraform and configure it using an Ansible on a free Compute Engine instance in the [Google Cloud Platform](https://cloud.google.com/free/).
 
-Work environment: I prefer to have different working environments (virtual machines) for different tasks. Here I use CentOS 7 on remote server from where all commands execute.
+Work environment: I prefer to have different working environments (virtual machines) for different tasks. Here I use CentOS 7 on remote server.
 
 * [Build image and upload to GCE](#build-image-and-upload-to-gce)
 * [Provision GCE instance](#provision-gce-instance)
@@ -322,7 +322,7 @@ Import certificates
 /certificate import file-name=certs/gcp/router_01.crt
 /certificate import file-name=certs/gcp/router_01.key
 ```
-When a passphrase is requested just skip it (hit <Enter>)
+When a passphrase is requested, skip it (hit `Enter`)
 
 Rename imported certificates
 ```
@@ -333,7 +333,7 @@ Check certificates
 ```
 /certificate print
 ```
-Important! Certificates must have flag `K`
+Important! Certificate `gcp_router_01.crt_0` must be with flag `K`
 
 ### Setup OpenVPN network interface
 ```
