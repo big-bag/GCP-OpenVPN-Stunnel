@@ -119,6 +119,7 @@ resource "google_compute_instance" "instance-1" {
     subnetwork         = "default"
     subnetwork_project = var.gcp_project
     access_config {
+#      // Ephemeral IP
       nat_ip       = google_compute_address.static.address
       network_tier = "PREMIUM"
     }

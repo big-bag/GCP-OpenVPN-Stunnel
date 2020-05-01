@@ -1,0 +1,8 @@
+---
+disable_all_rules:                "no"
+delete_rules_first:               "no"
+allow_openvpn_udp_clients:        "yes"
+allow_docker_access_to_internet:  "yes"
+allow_forward_mail:               "yes"
+allow_forward_http:               "yes"
+allow_forward_rdp:                "yes"
